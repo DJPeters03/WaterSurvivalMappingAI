@@ -141,4 +141,4 @@ No build tools. No server. Just open the file and play.
 
 ---
 
-Have fun turning knobs and watching strategy emerge. If you make a neat variant, document your reward schedule and share a gif—this little agent loves new worlds! 🌍🧠
+Have fun turning knobs and watching strategy emerge. 
