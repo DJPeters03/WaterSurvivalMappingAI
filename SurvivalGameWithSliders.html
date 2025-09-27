@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>waterdetectiongame — 80×80 Rising Water • Q-Learning • Square Patches</title>
+<style>
+  :root{
+    --bg:#0b1020; --panel:#0f1730; --ink:#e8eefc; --muted:#9fb3ff;
+    --black:#000000; --land:#00ff9c; --water:#44a6ff; --tree:#8b5a2b; --grid:#1a264a; --warn:#ff7b72;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:14px/1.35 system-ui,-apple-system,Segoe UI,Roboto,Arial}
+  #wrap{position:fixed; inset:0; display:grid; grid-template-rows:auto 1fr; gap:0; min-height:100vh}
+  header{display:flex; align-items:center; gap:12px; padding:10px 12px; background:var(--panel); border-bottom:1px solid #152347; flex-wrap:wrap}
+  header h1{font-size:16px; margin:0; font-weight:600; letter-spacing:.2px}
+  .spacer{flex:1}
+  .btn{
+    background:#0b1533; color:var(--ink); border:1px solid #2a3c74; padding:6px 10px; border-radius:10px;
+    cursor:pointer; transition:.2s transform,.2s background
+  }
+  .btn:hover{background:#0e1a3f; transform:translateY(-1px)}
+  main{display:grid; grid-template-columns:1fr 360px; min-height:0}
+  #view{display:block; width:100%; height:100%}
+  aside{background:var(--panel); border-left:1px solid #152347; padding:12px; overflow:auto}
+  .row{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px}
+  .meter{height:12px; background:#0b1533; border:1px solid #2a3c74; border-radius:8px; overflow:hidden}
+  .meter > div{height:100%; background:var(--land); width:0%}
+  .legend{margin-top:10px; font-size:12px; color:#9fb3ff99}
+  .tag{display:inline-block; padding:2px 6px; border:1px solid #2a3c74; border-radius:8px; margin-right:6px}
+  .t-land{background:var(--land); color:#001f12}
+  .t-water{background:var(--water); color:#001222}
+  .t-tree{background:var(--tree); color:#ffffff}
+  #minimap{
+    width:100%; height:auto; image-rendering: pixelated; background:#061129;
+    border:1px solid #152347; border-radius:12px; display:block; margin-top:8px;
+  }
+  #banner{
+    position:fixed; inset:auto 0 24px 0; display:none; justify-content:center; pointer-events:none;
+    text-align:center; font-weight:700; font-size:20px; color:#fff;
+  }
+  #banner span{
+    background:linear-gradient(90deg, rgba(0,0,0,.35), rgba(0,0,0,.5), rgba(0,0,0,.35));
+    padding:8px 14px; border-radius:12px; border:1px solid #2a3c74; box-shadow:0 10px 30px rgba(0,0,0,.35);
+  }
+  #learnBadge{
+    display:none; margin-left:8px; padding:2px 8px; border-radius:10px; border:1px solid #2a3c74;
+    background:#0b1533; color:#ffd166; font-weight:600; font-size:12px;
+  }
+  #genTag{
+    display:inline-block; padding:2px 8px; border-radius:10px; border:1px solid #2a3c74;
+    background:#0b1533; color:#9fb3ff; font-weight:600; font-size:12px;
+  }
+  .group{margin-top:10px; padding-top:8px; border-top:1px solid #152347}
+  .group h3{margin:0 0 8px 0; font-size:13px; color:#9fb3ff; letter-spacing:.3px}
+  .sub{font-size:12px; color:#9fb3ff99}
+  input[type=range], input[type=number], select{
+    background:#0b1533; color:var(--ink); border:1px solid #2a3c74; border-radius:8px; padding:6px 8px;
+  }
+  input[type=number]{width:92px}
+  label span.val{color:#ffd166; font-weight:700}
+</style>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="wrap">
+  <header>
+    <h1>waterdetectiongame — Rising Water • Q-Learning</h1>
+    <span id="genTag">Gen: <span id="genVal">1</span></span>
+    <span id="learnBadge">Learning… ε=<span id="epsVal">0.20</span> • Gen <span id="epsGen">1</span></span>
+    <div class="spacer"></div>
+    <button id="btnReset" class="btn">Reset Agent</button>
+    <button id="btnRegen" class="btn">Regenerate Map</button>
+    <button id="btnPause" class="btn">Pause</button>
+  </header>
+
+  <main>
+    <canvas id="view"></canvas>
+    <aside>
+      <div class="row"><div>Time</div><div id="time">0.0s</div></div>
+      <div class="row"><div>Next flood in</div><div id="floodETA">30.0s</div></div>
+      <div class="row"><div>Flood waves</div><div id="waves">0</div></div>
+
+      <hr style="border-color:#152347; opacity:.6; margin:10px 0">
+
+      <div class="row"><div>Visited land</div><div id="landCount">0</div></div>
+      <div class="row"><div>Water tiles</div><div id="waterCount">0</div></div>
+      <div class="row"><div>Trees identified</div><div id="treeFound">0</div></div>
+      <div class="row"><div>Coverage</div><div id="coverage">0.0%</div></div>
+      <div class="meter"><div id="covBar"></div></div>
+
+      <div class="legend">
+        <span class="tag t-land">Visited land</span>
+        <span class="tag t-water">Water (barrier)</span>
+        <span class="tag t-tree">Tree tile</span>
+        <div style="margin-top:8px">
+          Trees by height found:
+          <span id="h5">5:0</span>,
+          <span id="h10">10:0</span>,
+          <span id="h15">15:0</span>,
+          <span id="h20">20:0</span>
+        </div>
+      </div>
+
+      <div style="margin-top:12px; color:var(--muted); font-weight:600">AI Minimap (detections)</div>
+      <canvas id="minimap" width="256" height="256"></canvas>
+      <div class="sub" style="margin-top:6px">
+        • Green: land visited • Brown: tree (when visited) • Blue: water (when sensed) • Gray: unknown
+      </div>
+
+      <!-- ===== DIALS / CONTROLS ===== -->
+      <div class="group">
+        <h3>Flood & Loop</h3>
+        <div class="row">
+          <label>Flood period: <span class="val" id="floodPeriodVal">30s</span></label>
+          <input id="floodPeriod" type="range" min="5" max="90" step="1" value="30" />
+        </div>
+        <div class="row">
+          <label>Learning speed (steps/frame): <span class="val" id="stepsVal">24</span></label>
+          <input id="steps" type="range" min="6" max="60" step="2" value="24" />
+        </div>
+      </div>
+
+      <div class="group">
+        <h3>Reinforcement Learning</h3>
+        <div class="row">
+          <label>ε (explore): <span class="val" id="epsDialVal">0.20</span></label>
+          <input id="epsDial" type="range" min="0" max="1" step="0.01" value="0.20" />
+        </div>
+        <div class="row">
+          <label>α (learning rate): <span class="val" id="alphaDialVal">0.25</span></label>
+          <input id="alphaDial" type="range" min="0.01" max="1" step="0.01" value="0.25" />
+        </div>
+        <div class="row">
+          <label>γ (discount): <span class="val" id="gammaDialVal">0.90</span></label>
+          <input id="gammaDial" type="range" min="0.50" max="0.99" step="0.01" value="0.90" />
+        </div>
+      </div>
+
+      <div class="group">
+        <h3>Rewards (live)</h3>
+        <div class="row"><label>R_TIME</label><input id="rTime" type="number" step="0.01" value="-0.01"></div>
+        <div class="row"><label>R_NEW_LAND</label><input id="rNewLand" type="number" step="0.1" value="1.0"></div>
+        <div class="row"><label>R_VISIT</label><input id="rVisit" type="number" step="0.1" value="0.1"></div>
+        <div class="row"><label>R_DISCOVER_TREE</label><input id="rTree" type="number" step="0.1" value="1.8"></div>
+        <div class="row"><label>R_SENSE_WATER</label><input id="rSenseWater" type="number" step="0.1" value="0.3"></div>
+        <div class="row"><label>R_FLOOD_SAFE</label><input id="rSafe" type="number" step="0.5" value="6.0"></div>
+        <div class="row"><label>R_FLOOD_DEATH</label><input id="rDeath" type="number" step="0.5" value="-8.0"></div>
+        <div class="row"><label>R_STUCK</label><input id="rStuck" type="number" step="0.1" value="-2.0"></div>
+      </div>
+      <!-- ===== end dials ===== -->
+    </aside>
+  </main>
+</div>
+
+<div id="banner"><span></span></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+(() => {
+  // ====== DOM ======
+  const canvas = document.getElementById('view');
+  const timeEl = document.getElementById('time');
+  const floodETAEl = document.getElementById('floodETA');
+  const wavesEl = document.getElementById('waves');
+  const landCountEl = document.getElementById('landCount');
+  const waterCountEl = document.getElementById('waterCount');
+  const treeFoundEl = document.getElementById('treeFound');
+  const coverageEl = document.getElementById('coverage');
+  const covBar = document.getElementById('covBar');
+  const h5El = document.getElementById('h5');
+  const h10El = document.getElementById('h10');
+  const h15El = document.getElementById('h15');
+  const h20El = document.getElementById('h20');
+  const btnReset = document.getElementById('btnReset');
+  const btnRegen = document.getElementById('btnRegen');
+  const btnPause = document.getElementById('btnPause');
+  const banner = document.getElementById('banner');
+  const bannerText = banner.querySelector('span');
+  const minimap = document.getElementById('minimap');
+  const mctx = minimap.getContext('2d');
+  const learnBadge = document.getElementById('learnBadge');
+  const epsVal = document.getElementById('epsVal');
+  const genTag = document.getElementById('genVal');
+  const epsGen = document.getElementById('epsGen');
+
+  // Dials
+  const floodPeriod = document.getElementById('floodPeriod');
+  const floodPeriodVal = document.getElementById('floodPeriodVal');
+  const stepsDial = document.getElementById('steps');
+  const stepsVal = document.getElementById('stepsVal');
+
+  const epsDial = document.getElementById('epsDial');
+  const alphaDial = document.getElementById('alphaDial');
+  const gammaDial = document.getElementById('gammaDial');
+  const epsDialVal = document.getElementById('epsDialVal');
+  const alphaDialVal = document.getElementById('alphaDialVal');
+  const gammaDialVal = document.getElementById('gammaDialVal');
+
+  const rTime = document.getElementById('rTime');
+  const rNewLand = document.getElementById('rNewLand');
+  const rVisit = document.getElementById('rVisit');
+  const rTree = document.getElementById('rTree');
+  const rSenseWater = document.getElementById('rSenseWater');
+  const rSafe = document.getElementById('rSafe');
+  const rDeath = document.getElementById('rDeath');
+  const rStuck = document.getElementById('rStuck');
+
+  // ====== Constants / Tunables ======
+  const N = 80;                 // 80x80 grid
+  const WALL_HEIGHT = 20;       // room wall height
+  const CELL = 1.0;             // world units per cell
+  const HALF = (N*CELL)/2;
+
+  const TILE_UNKNOWN = 0;
+  const TILE_LAND    = 1;
+  const TILE_WATER   = 2;
+  const TILE_TREE    = 3;
+
+  // Tunables (live-updated by dials)
+  let FLOOD_PERIOD = 30.0;           // seconds (dial)
+  let STEPS_PER_FRAME = 24;          // dial
+
+  // Rewards (live)
+  let R_TIME = -0.01;
+  let R_NEW_LAND = 1.0;
+  let R_VISIT = 0.1;
+  let R_DISCOVER_TREE = 1.8;
+  let R_SENSE_WATER = 0.3;
+  let R_FLOOD_SAFE = 6.0;
+  let R_FLOOD_DEATH = -8.0;
+  let R_STUCK = -2.0;
+
+  // Colors
+  const css = getComputedStyle(document.documentElement);
+  const HEX_BLACK = css.getPropertyValue('--black').trim()  || '#000000';
+  const HEX_LAND  = css.getPropertyValue('--land').trim()   || '#00ff9c';
+  const HEX_WATER = css.getPropertyValue('--water').trim()  || '#44a6ff';
+  const HEX_TREE  = css.getPropertyValue('--tree').trim()   || '#8b5a2b';
+  const HEX_GRID  = css.getPropertyValue('--grid').trim()   || '#1a264a';
+  const COL_BLACK = new THREE.Color(HEX_BLACK);
+  const COL_LAND  = new THREE.Color(HEX_LAND);
+  const COL_WATER = new THREE.Color(HEX_WATER);
+  const COL_TREE  = new THREE.Color(HEX_TREE);
+  const COL_GRID  = new THREE.Color(HEX_GRID);
+
+  // ====== Three.js setup ======
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x061129);
+
+  const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
+  camera.position.set(0, 70, 70);
+  camera.lookAt(0, 0, 0);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.target.set(0, 0, 0);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x223355, 0.9));
+  const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+  dir.position.set(30, 50, 10);
+  scene.add(dir);
+
+  function onResize(){
+    const rect = canvas.getBoundingClientRect();
+    const w = rect.width, h = rect.height;
+    renderer.setSize(w, h, false);
+    camera.aspect = w/h;
+    camera.updateProjectionMatrix();
+  }
+  new ResizeObserver(onResize).observe(canvas);
+  onResize();
+
+  // ====== Room (walls height 20) ======
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0x11224a, metalness:0.1, roughness:0.8 });
+  const thickness = 0.6;
+  const wallGeoX = new THREE.BoxGeometry(N*CELL, WALL_HEIGHT, thickness);
+  const wallGeoZ = new THREE.BoxGeometry(thickness, WALL_HEIGHT, N*CELL);
+  const wallZ1 = new THREE.Mesh(wallGeoX, wallMat); wallZ1.position.set(0, WALL_HEIGHT/2, -HALF);
+  const wallZ2 = new THREE.Mesh(wallGeoX, wallMat); wallZ2.position.set(0, WALL_HEIGHT/2,  HALF);
+  const wallX1 = new THREE.Mesh(wallGeoZ, wallMat); wallX1.position.set(-HALF, WALL_HEIGHT/2, 0);
+  const wallX2 = new THREE.Mesh(wallGeoZ, wallMat); wallX2.position.set( HALF, WALL_HEIGHT/2, 0);
+  scene.add(wallZ1, wallZ2, wallX1, wallX2);
+
+  // Subtle grid helper (floor reference)
+  const gridHelper = new THREE.GridHelper(N*CELL, N, COL_GRID, COL_GRID);
+  gridHelper.position.y = 0.02;
+  scene.add(gridHelper);
+
+  // ====== World arrays ======
+  const tiles = new Uint8Array(N*N);      // TILE_* states
+  const seen  = new Uint8Array(N*N);      // 0/1 visited by agent (for coverage & minimap)
+  const waterSeen = new Uint8Array(N*N);  // 0/1 water known (adjacent sensed) — PERSISTENT across resets/gens
+  const treeHeights = new Uint8Array(N*N);// 0 or WALL_HEIGHT
+  let totalClassifiable = 0;              // land + trees (not water)
+  let waves = 0;                          // water expansion waves
+  let win = false;
+  let lastFloodTime = 0;
+
+  // ====== Gen-1 snapshots (to keep water amount constant across generations) ======
+  let initialWaterMask = null;     // Uint8Array length N*N
+  let initialTreeMask = null;      // Uint8Array length N*N
+  let initialTreeHeights = null;   // Uint8Array length N*N
+
+  function id(x,y){ return y*N + x; }
+  function inB(x,y){ return x>=0 && x<N && y>=0 && y<N; }
+  function wx(x){ return (x - (N-1)/2) * CELL; }
+  function wz(y){ return (y - (N-1)/2) * CELL; }
+
+  // ====== Instanced meshes ======
+  const tileGeo = new THREE.BoxGeometry(CELL, 0.04, CELL);
+  const tileMat = new THREE.MeshBasicMaterial({ vertexColors:true });
+  let floorIMesh = new THREE.InstancedMesh(tileGeo, tileMat, N*N);
+  floorIMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  floorIMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(N*N*3), 3);
+  scene.add(floorIMesh);
+
+  const blockGeo = new THREE.BoxGeometry(CELL*0.98, 0.9, CELL*0.98);
+  const waterBlockMat = new THREE.MeshStandardMaterial({ color: COL_WATER, metalness:0.15, roughness:0.5 });
+  const treeBlockMat  = new THREE.MeshStandardMaterial({ color: COL_TREE,  metalness:0.2,  roughness:0.6 });
+
+  let waterIMesh = null;   // raised squares for water patches
+  let treeIMesh  = null;   // raised squares for tree patches
+
+  // Optional “tall trunk” visual
+  const trunkGeo = new THREE.CylinderGeometry(0.25, 0.25, 1.0, 12);
+  const trunkMat = new THREE.MeshStandardMaterial({ color: COL_TREE, metalness:0.2, roughness:0.6 });
+  let trunkIMesh = null;
+
+  // ====== Agent ======
+  const agentGeo = new THREE.CylinderGeometry(0.35, 0.35, 0.22, 24);
+  const agentMat = new THREE.MeshStandardMaterial({ color: 0x19d38a, emissive:0x0b5, metalness:0.2, roughness:0.5 });
+  const agentMesh = new THREE.Mesh(agentGeo, agentMat);
+  agentMesh.rotation.x = Math.PI/2;
+  scene.add(agentMesh);
+
+  const agent = { x:1, y:1, lastMove:null, onTree:false, altitude:0.16 };
+
+  // ====== Generation & learning bookkeeping ======
+  let generation = 1;
+  let learnMode = true;                 // start in learning mode
+  let epsilon = 0.20, alpha = 0.25, gamma = 0.90;
+  let episodeSteps = 0;
+  let extraReward = 0;                  // injected reward from env (e.g., flood)
+
+  function updateGenUI(){
+    genTag.textContent = String(generation);
+    epsGen.textContent = String(generation);
+  }
+
+  // ====== Utils ======
+  function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [a[i],a[j]]=[a[j],a[i]]; } return a; }
+
+  // ====== Map generation with square/rect clusters (TurfWar-style) ======
+  function generateMap(){
+    tiles.fill(TILE_UNKNOWN);
+    seen.fill(0);
+    waterSeen.fill(0);              // New world => forget past water (only here)
+    treeHeights.fill(0);
+    waves = 0;
+    lastFloodTime = 0;
+    win = false;
+
+    const waterPct = 0.10;   // ~10% cover as water clusters
+    const treePct  = 0.025;  // ~2.5% cover as tree clusters
+    const triesMax = N*N*5;
+
+    function stampRects(targetCount, tileType){
+      let placed = 0, tries = 0;
+      while(placed < targetCount && tries < triesMax){
+        tries++;
+        const w = 2 + (Math.random()*6|0); // 2..7
+        const h = 2 + (Math.random()*6|0); // 2..7
+        const x0 = (Math.random()*(N-w))|0;
+        const y0 = (Math.random()*(N-h))|0;
+
+        // keep spawn area safe
+        if (x0<=2 && y0<=2) continue;
+
+        for(let y=y0;y<y0+h && placed<targetCount;y++){
+          for(let x=x0;x<x0+w && placed<targetCount;x++){
+            const k = id(x,y);
+            if(tileType===TILE_WATER){
+              if(tiles[k]!==TILE_WATER){
+                tiles[k]=TILE_WATER; placed++;
+              }
+            }else if(tileType===TILE_TREE){
+              if(tiles[k]!==TILE_WATER && tiles[k]!==TILE_TREE){
+                tiles[k]=TILE_TREE;
+                treeHeights[k] = WALL_HEIGHT; // uniform tree height = wall height
+                placed++;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    const targetWater = Math.round(N*N*waterPct);
+    const targetTrees = Math.round(N*N*treePct);
+
+    // Place water rectangles
+    stampRects(targetWater, TILE_WATER);
+
+    // Seed a non-full edge to start flood (no full row)
+    for(let x=0;x<N;x++){
+      if(x % 3 === 0) tiles[id(x,0)] = TILE_WATER;
+    }
+
+    // Place tree rectangles on non-water
+    stampRects(targetTrees, TILE_TREE);
+
+    // Safe spawn
+    tiles[id(1,1)] = TILE_UNKNOWN; treeHeights[id(1,1)] = 0;
+
+    // === SNAPSHOT GEN-1 LAYOUT (only once, or when user regenerates) ===
+    if (!initialWaterMask || !initialTreeMask || !initialTreeHeights) {
+      initialWaterMask   = new Uint8Array(N*N);
+      initialTreeMask    = new Uint8Array(N*N);
+      initialTreeHeights = new Uint8Array(N*N);
+      for (let i=0;i<tiles.length;i++){
+        if (tiles[i] === TILE_WATER) initialWaterMask[i] = 1;
+        if (tiles[i] === TILE_TREE)  initialTreeMask[i]  = 1;
+        if (tiles[i] === TILE_TREE)  initialTreeHeights[i] = treeHeights[i]; // WALL_HEIGHT
+      }
+    }
+
+    totalClassifiable = 0;
+    for(let i=0;i<tiles.length;i++){
+      if(tiles[i] !== TILE_WATER) totalClassifiable++;
+    }
+
+    // Build / refresh meshes
+    const M = new THREE.Matrix4();
+    const C = new THREE.Color();
+
+    // Counts
+    let waterCount = 0, treeCount = 0;
+    for(let i=0;i<tiles.length;i++){
+      if(tiles[i]===TILE_WATER) waterCount++;
+      else if(tiles[i]===TILE_TREE) treeCount++;
+    }
+
+    // Rebuild instanced block meshes
+    if(waterIMesh) scene.remove(waterIMesh);
+    if(treeIMesh)  scene.remove(treeIMesh);
+    waterIMesh = new THREE.InstancedMesh(blockGeo, waterBlockMat, waterCount);
+    waterIMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(waterIMesh);
+
+    treeIMesh  = new THREE.InstancedMesh(blockGeo, treeBlockMat,  treeCount);
+    treeIMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(treeIMesh);
+
+    // Optional tall trunks (same count as tree blocks)
+    if(trunkIMesh) scene.remove(trunkIMesh);
+    trunkIMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, treeCount);
+    trunkIMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(trunkIMesh);
+
+    let wi=0, ti=0, tt=0;
+    for(let y=0;y<N;y++){
+      for(let x=0;x<N;x++){
+        const k = id(x,y);
+        // floor color
+        M.makeTranslation(wx(x), 0, wz(y));
+        floorIMesh.setMatrixAt(k, M);
+        if(tiles[k] === TILE_WATER) C.copy(COL_WATER);
+        else if(tiles[k] === TILE_TREE) C.copy(COL_TREE);
+        else C.copy(COL_BLACK);
+        floorIMesh.instanceColor.setXYZ(k, C.r, C.g, C.b);
+
+        // raised water block
+        if(tiles[k]===TILE_WATER){
+          const mm = new THREE.Matrix4().makeTranslation(wx(x), 0.45, wz(y));
+          waterIMesh.setMatrixAt(wi++, mm);
+        }
+        // raised tree block + tall trunk
+        if(tiles[k]===TILE_TREE){
+          const mm = new THREE.Matrix4().makeTranslation(wx(x), 0.45, wz(y));
+          treeIMesh.setMatrixAt(ti++, mm);
+
+          const h = treeHeights[k]; // WALL_HEIGHT
+          const T = new THREE.Matrix4()
+            .makeScale(1, h, 1)
+            .multiply(new THREE.Matrix4().makeTranslation(wx(x), h/2, wz(y)));
+          trunkIMesh.setMatrixAt(tt++, T);
+        }
+      }
+    }
+    floorIMesh.instanceMatrix.needsUpdate = true;
+    floorIMesh.instanceColor.needsUpdate = true;
+    if(waterIMesh) waterIMesh.instanceMatrix.needsUpdate = true;
+    if(treeIMesh)  treeIMesh.instanceMatrix.needsUpdate  = true;
+    if(trunkIMesh) trunkIMesh.instanceMatrix.needsUpdate = true;
+
+    // Agent reset
+    agent.x=1; agent.y=1; agent.lastMove=null; agent.onTree=false; agent.altitude=0.16;
+    agentMesh.position.set(wx(agent.x), agent.altitude, wz(agent.y));
+
+    updateHUD(0);
+    drawMinimap();
+  }
+
+  // ====== Q-Learning (tabular) ======
+  // States: onTree(0/1), nearUnseen(0/1), urgency(0..2) by time-to-flood bucket
+  // Actions: 0=MAP (move toward unseen), 1=CLIMB (if on tree; else maps)
+  const Q = new Map(); // key "t:u:z" -> [qMap, qClimb]
+  function sKey([t,u,z]){ return `${t}:${u}:${z}`; }
+  function ensureQ(s){ const k=sKey(s); if(!Q.has(k)) Q.set(k,[0,0]); return Q.get(k); }
+  function chooseAction(s){ if(Math.random()<epsilon) return Math.random()<0.5?0:1; const q=ensureQ(s); return q[0]>=q[1]?0:1; }
+
+  function stateVector(){
+    const k = id(agent.x,agent.y);
+    const onT = tiles[k]===TILE_TREE ? 1 : 0;
+    // near unseen?
+    let nearU = 0;
+    for(const {dx,dy} of DIRS){
+      const nx=agent.x+dx, ny=agent.y+dy;
+      if(inB(nx,ny) && tiles[id(nx,ny)]===TILE_UNKNOWN && tiles[id(nx,ny)]!==TILE_WATER){ nearU=1; break; }
+    }
+    const now = (performance.now()-t0)/1000;
+    const timeToFlood = FLOOD_PERIOD - ((now - lastFloodTime) % FLOOD_PERIOD);
+    const urg = (timeToFlood > 20)?0 : (timeToFlood > 10)?1 : 2;
+    return [onT, nearU, urg];
+  }
+
+  // ====== Movement & helpers ======
+  const DIRS = [
+    {dx: 1, dy: 0}, {dx:-1, dy: 0}, {dx: 0, dy: 1}, {dx: 0, dy:-1},
+  ];
+
+  function senseWaterAround(x,y){
+    // mark waterSeen for adjacent tiles only; reward only the *first* discovery
+    const nb = [[x+1,y],[x-1,y],[x,y+1],[x,y-1]];
+    for(const [nx,ny] of nb){
+      if(!inB(nx,ny)) continue;
+      const kk = id(nx,ny);
+      if(tiles[kk]===TILE_WATER && waterSeen[kk]===0){
+        waterSeen[kk]=1;
+        extraReward += R_SENSE_WATER; // shaping reward
+      }
+    }
+  }
+
+  function moveTo(nx, ny, d){
+    agent.x = nx; agent.y = ny; agent.lastMove = d;
+    const k = id(agent.x, agent.y);
+    agent.onTree = (tiles[k] === TILE_TREE);
+
+    if(agent.onTree){
+      const h = treeHeights[k] || WALL_HEIGHT;
+      agent.altitude += (h - agent.altitude) * 0.5;
+      if(!seen[k]) { seen[k]=1; extraReward += R_DISCOVER_TREE; }
+    } else {
+      const target = 0.16;
+      agent.altitude += (target - agent.altitude) * 0.5;
+
+      if(tiles[k] === TILE_UNKNOWN){
+        tiles[k] = TILE_LAND;
+        const C = COL_LAND; floorIMesh.instanceColor.setXYZ(k, C.r, C.g, C.b);
+        floorIMesh.instanceColor.needsUpdate = true;
+        extraReward += R_NEW_LAND;
+      }
+      if(!seen[k]) { seen[k]=1; extraReward += R_VISIT; }
+    }
+
+    agentMesh.position.set(wx(agent.x), agent.altitude, wz(agent.y));
+    senseWaterAround(agent.x, agent.y);
+  }
+
+  function stepTowardUnseen(){
+    const opts = [];
+    for(const d of DIRS){
+      const nx=agent.x+d.dx, ny=agent.y+d.dy;
+      if(!inB(nx,ny)) continue;
+      const k=id(nx,ny);
+      if(tiles[k]===TILE_WATER) continue;
+      if(tiles[k]===TILE_UNKNOWN) opts.push({nx,ny,d});
+    }
+    if(!opts.length) return false;
+    const choice = opts[(Math.random()*opts.length)|0];
+    moveTo(choice.nx, choice.ny, choice.d);
+    return true;
+  }
+
+  function stepGreedyOnce(){
+    const opts = [];
+    const back = agent.lastMove ? {dx:-agent.lastMove.dx, dy:-agent.lastMove.dy} : null;
+    for(const d of DIRS){
+      const nx = agent.x + d.dx, ny = agent.y + d.dy;
+      if(!inB(nx,ny)) continue;
+      const k = id(nx,ny);
+      if(tiles[k] === TILE_WATER) continue;
+      const isUnseen = (tiles[k] === TILE_UNKNOWN);
+      const isBack = back && back.dx === d.dx && back.dy === d.dy;
+      const score = (isUnseen ? 2 : 1) - (isBack ? 0.4 : 0);
+      opts.push({d,nx,ny,score});
+    }
+    if(!opts.length) return false;
+
+    let sum=0; for(const o of opts) sum += Math.max(0.01, o.score);
+    let r = Math.random()*sum, choice = opts[0];
+    for(const o of opts){ r -= Math.max(0.01, o.score); if(r<=0){ choice=o; break; } }
+
+    moveTo(choice.nx, choice.ny, choice.d);
+    return true;
+  }
+
+  function resetAgentOnly(){
+    agent.x=1; agent.y=1; agent.lastMove=null; agent.onTree=false; agent.altitude=0.16;
+    agentMesh.position.set(wx(agent.x), agent.altitude, wz(agent.y));
+    episodeSteps=0;
+    lastFloodTime = (performance.now()-t0)/1000; // restart flood timer
+    waves = 0;
+  }
+
+  function restoreGen1Terrain(){
+    // Restore terrain from Gen-1 snapshots (water & trees). Everything else -> UNKNOWN
+    const C = new THREE.Color();
+    for (let i=0;i<tiles.length;i++){
+      if (initialWaterMask && initialWaterMask[i] === 1){
+        tiles[i] = TILE_WATER;
+        treeHeights[i] = 0;
+      } else if (initialTreeMask && initialTreeMask[i] === 1){
+        tiles[i] = TILE_TREE;
+        treeHeights[i] = initialTreeHeights ? initialTreeHeights[i] : WALL_HEIGHT;
+      } else {
+        tiles[i] = TILE_UNKNOWN;
+        treeHeights[i] = 0;
+      }
+    }
+    // repaint floor
+    for (let i=0;i<tiles.length;i++){
+      if (tiles[i] === TILE_WATER)      C.copy(COL_WATER);
+      else if (tiles[i] === TILE_TREE)  C.copy(COL_TREE);
+      else                              C.copy(COL_BLACK);
+      floorIMesh.instanceColor.setXYZ(i, C.r, C.g, C.b);
+    }
+    floorIMesh.instanceColor.needsUpdate = true;
+
+    // rebuild raised blocks/trunks
+    let waterCount = 0, treeCount = 0;
+    for (let i=0;i<tiles.length;i++){
+      if (tiles[i]===TILE_WATER) waterCount++;
+      else if (tiles[i]===TILE_TREE) treeCount++;
+    }
+
+    if (waterIMesh) scene.remove(waterIMesh);
+    if (treeIMesh)  scene.remove(treeIMesh);
+    if (trunkIMesh) scene.remove(trunkIMesh);
+
+    waterIMesh = new THREE.InstancedMesh(blockGeo, waterBlockMat, waterCount);
+    waterIMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(waterIMesh);
+
+    treeIMesh  = new THREE.InstancedMesh(blockGeo, treeBlockMat,  treeCount);
+    treeIMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(treeIMesh);
+
+    trunkIMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, treeCount);
+    trunkIMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(trunkIMesh);
+
+    const M = new THREE.Matrix4();
+    let wi=0, ti=0, tt=0;
+    for (let y=0;y<N;y++){
+      for (let x=0;x<N;x++){
+        const k = id(x,y);
+        if (tiles[k]===TILE_WATER){
+          const mm = M.makeTranslation(wx(x), 0.45, wz(y)).clone();
+          waterIMesh.setMatrixAt(wi++, mm);
+        }
+        if (tiles[k]===TILE_TREE){
+          const mm = M.makeTranslation(wx(x), 0.45, wz(y)).clone();
+          treeIMesh.setMatrixAt(ti++, mm);
+
+          const h = treeHeights[k] || WALL_HEIGHT;
+          const T = new THREE.Matrix4()
+            .makeScale(1, h, 1)
+            .multiply(new THREE.Matrix4().makeTranslation(wx(x), h/2, wz(y)));
+          trunkIMesh.setMatrixAt(tt++, T);
+        }
+      }
+    }
+    if (waterIMesh) waterIMesh.instanceMatrix.needsUpdate = true;
+    if (treeIMesh)  treeIMesh.instanceMatrix.needsUpdate  = true;
+    if (trunkIMesh) trunkIMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  function resetProgressNextGen(reasonText){
+    // KEEP waterSeen across generations (persistent water memory)
+    for(let i=0;i<seen.length;i++) seen[i]=0;
+    // DO NOT clear waterSeen here
+
+    // restore Gen-1 terrain
+    restoreGen1Terrain();
+
+    generation++;
+    updateGenUI();
+    showBanner(`${reasonText} — Progress reset • Gen ${generation}`);
+    setTimeout(()=>hideBanner(), 1200);
+
+    resetAgentOnly();
+    waves = 0;
+  }
+
+  // ====== Q step ======
+  function stepAgentQL(){
+    episodeSteps++;
+    const s = stateVector();
+    const a = chooseAction(s);
+
+    let reward = R_TIME + extraReward;
+    extraReward = 0;
+
+    if(a===1 && tiles[id(agent.x,agent.y)]===TILE_TREE){
+      const here = id(agent.x,agent.y);
+      if(!seen[here]) { seen[here]=1; reward += R_DISCOVER_TREE; }
+      const h = treeHeights[here] || WALL_HEIGHT;
+      agent.onTree=true; agent.altitude += (h - agent.altitude)*0.5;
+      if(!stepTowardUnseen()) stepGreedyOnce();
+    } else {
+      if(!stepTowardUnseen()) stepGreedyOnce();
+    }
+
+    if(!agent.lastMove) reward += R_STUCK;
+
+    const s2 = stateVector();
+    const q = ensureQ(s), q2 = ensureQ(s2);
+    const bestNext = Math.max(q2[0], q2[1]);
+    q[a] = (1-alpha)*q[a] + alpha*(reward + gamma*bestNext);
+
+    if(episodeSteps % 200 === 0) epsilon = Math.max(0.02, epsilon*0.98);
+    epsVal.textContent = epsilon.toFixed(2);
+  }
+
+  // ====== Flood expansion + rules ======
+  function floodStep(){
+    const agentK = id(agent.x,agent.y);
+    const onTreeNow = (tiles[agentK]===TILE_TREE);
+
+    if(onTreeNow){
+      extraReward += R_FLOOD_SAFE;
+    } else {
+      extraReward += R_FLOOD_DEATH;
+      resetProgressNextGen('Flooded (not on tree)');
+    }
+
+    // Build candidate list of tiles to flood (4-neighbor of water), excluding agent tile
+    const rowCandidates = Array.from({length:N}, () => []);
+    for(let y=0;y<N;y++){
+      for(let x=0;x<N;x++){
+        const k = id(x,y);
+        if(k === agentK) continue;                 // never flood onto agent
+        if(tiles[k] === TILE_WATER) continue;
+        const wN =
+          (inB(x+1,y) && tiles[id(x+1,y)]===TILE_WATER) ||
+          (inB(x-1,y) && tiles[id(x-1,y)]===TILE_WATER) ||
+          (inB(x,y+1) && tiles[id(x,y+1)]===TILE_WATER) ||
+          (inB(x,y-1) && tiles[id(x,y-1)]===TILE_WATER);
+        if(wN) rowCandidates[y].push(k);
+      }
+    }
+
+    // Per-row throttling to avoid "full rows"
+    const ROW_MAX_FRACTION = 0.25;
+    const P_FLOOD = 0.65;
+
+    const toWater = [];
+    for(let y=0;y<N;y++){
+      if(rowCandidates[y].length === 0) continue;
+
+      const shuffled = shuffle(rowCandidates[y].slice());
+      const rowCap = Math.max(1, Math.floor(N * ROW_MAX_FRACTION));
+      let taken = 0;
+
+      for(const k of shuffled){
+        if(taken >= rowCap) break;
+        if(Math.random() > P_FLOOD) continue;
+        toWater.push(k);
+        taken++;
+      }
+    }
+
+    if(!toWater.length){ waves++; return; }
+
+    const C = COL_WATER;
+    for(const k of toWater){
+      tiles[k] = TILE_WATER;
+      treeHeights[k] = 0;
+      floorIMesh.instanceColor.setXYZ(k, C.r, C.g, C.b);
+    }
+    floorIMesh.instanceColor.needsUpdate = true;
+
+    let waterCount = 0;
+    for(let i=0;i<tiles.length;i++) if(tiles[i]===TILE_WATER) waterCount++;
+    if(waterIMesh) scene.remove(waterIMesh);
+    waterIMesh = new THREE.InstancedMesh(blockGeo, waterBlockMat, waterCount);
+    waterIMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(waterIMesh);
+
+    const M = new THREE.Matrix4();
+    let wi=0;
+    for(let y=0;y<N;y++){
+      for(let x=0;x<N;x++){
+        const k = id(x,y);
+        if(tiles[k]===TILE_WATER){
+          const mm = M.makeTranslation(wx(x), 0.45, wz(y)).clone();
+          waterIMesh.setMatrixAt(wi++, mm);
+        }
+      }
+    }
+    if(waterIMesh) waterIMesh.instanceMatrix.needsUpdate = true;
+
+    waves++;
+  }
+
+  // ====== Minimap (no pre-reveal) ======
+  function drawMinimap(){
+    const w = minimap.width, h = minimap.height;
+    mctx.fillStyle = '#0b1533'; mctx.fillRect(0,0,w,h);
+    const sx = w / N, sy = h / N;
+
+    // grid (subtle)
+    mctx.strokeStyle = HEX_GRID; mctx.lineWidth = 1;
+    mctx.beginPath();
+    for(let i=0;i<=N;i++){
+      mctx.moveTo(i*sx+0.5, 0.5); mctx.lineTo(i*sx+0.5, h+0.5);
+      mctx.moveTo(0.5, i*sy+0.5); mctx.lineTo(w+0.5, i*sy+0.5);
+    }
+    mctx.stroke();
+
+    for(let y=0;y<N;y++){
+      for(let x=0;x<N;x++){
+        const k = id(x,y);
+        // default unknown
+        let color = '#1a264a';
+        if (seen[k]) color = HEX_LAND;                        // visited land
+        if (tiles[k]===TILE_TREE && seen[k]) color = HEX_TREE;// tree only after visited
+        if (waterSeen[k]) color = HEX_WATER;                  // water only after sensed
+
+        mctx.fillStyle = color;
+        mctx.fillRect(Math.floor(x*sx), Math.floor(y*sy), Math.ceil(sx), Math.ceil(sy));
+
+        // simple dot on trees (uniform height)
+        if(tiles[k]===TILE_TREE && seen[k]){
+          mctx.fillStyle = '#a7794a';
+          mctx.fillRect(Math.floor(x*sx)+1, Math.floor(y*sy)+1, Math.max(1,Math.floor(sx/3)), Math.max(1,Math.floor(sy/3)));
+        }
+      }
+    }
+    // agent marker
+    mctx.fillStyle = '#ffffff';
+    mctx.fillRect(Math.floor(agent.x*sx), Math.floor(agent.y*sy), Math.max(1,Math.ceil(sx)), Math.max(1,Math.ceil(sy)));
+  }
+
+  // ====== HUD ======
+  function updateHUD(elapsed){
+    let land=0, water=0, h5=0,h10=0,h15=0,h20=0, visited=0;
+    for(let i=0;i<tiles.length;i++){
+      if(tiles[i] === TILE_LAND) land++;
+      else if(tiles[i] === TILE_WATER) water++;
+      else if(tiles[i] === TILE_TREE) {
+        const h = treeHeights[i];
+        if(h===5) h5++; else if(h===10) h10++; else if(h===15) h15++; else if(h===20) h20++;
+      }
+      if(seen[i]) visited++;
+    }
+    const coverage = totalClassifiable ? (visited/totalClassifiable*100) : 0;
+
+    landCountEl.textContent = land;
+    waterCountEl.textContent = water;
+    treeFoundEl.textContent = visitedTreesFound();
+    h5El.textContent = `5:${h5}`; h10El.textContent = `10:${h10}`; h15El.textContent = `15:${h15}`; h20El.textContent = `20:${h20}`;
+    coverageEl.textContent = `${coverage.toFixed(1)}%`;
+    covBar.style.width = `${coverage.toFixed(2)}%`;
+
+    timeEl.textContent = `${elapsed.toFixed(1)}s`;
+    const nextIn = Math.max(0, FLOOD_PERIOD - ((elapsed - lastFloodTime) % FLOOD_PERIOD));
+    floodETAEl.textContent = `${nextIn.toFixed(1)}s`;
+    wavesEl.textContent = String(waves);
+
+    if(!win && coverage >= 100 - 1e-6){
+      win = true;
+      showBanner('Mapped 100% — YOU WIN!');
+      startLearning(false);
+      paused = true;
+    }
+  }
+  function visitedTreesFound(){
+    let c=0; for(let i=0;i<tiles.length;i++) if(tiles[i]===TILE_TREE && seen[i]) c++; return c;
+  }
+
+  function showBanner(text){ bannerText.textContent = text; banner.style.display = 'flex'; }
+  function hideBanner(){ banner.style.display = 'none'; }
+
+  // ====== Controls ======
+  let paused = false;
+  btnPause.addEventListener('click', () => {
+    paused = !paused;
+    btnPause.textContent = paused ? 'Resume' : 'Pause';
+  });
+  btnReset.addEventListener('click', () => {
+    // manual reset: wipe run-based knowledge but KEEP waterSeen memory
+    hideBanner();
+    paused = false; btnPause.textContent = 'Pause';
+    for(let i=0;i<seen.length;i++) seen[i]=0;
+    // DO NOT clear waterSeen here (persistent across resets/gens)
+
+    restoreGen1Terrain();
+    win=false;
+    resetAgentOnly();
+    startLearning(true);
+    updateHUD(0); drawMinimap();
+  });
+  btnRegen.addEventListener('click', () => {
+    // New world entirely; also redefine what "Gen-1" means — forget water memory here
+    hideBanner(); paused=false; btnPause.textContent='Pause';
+    startLearning(true);
+    generation = 1; updateGenUI();
+    initialWaterMask = initialTreeMask = initialTreeHeights = null;
+    generateMap(); // generateMap() clears waterSeen
+  });
+
+  function startLearning(on=true){
+    learnMode = on;
+    learnBadge.style.display = on ? 'inline-block' : 'none';
+    epsVal.textContent = epsilon.toFixed(2);
+    updateGenUI();
+  }
+
+  // ====== DIAL BINDINGS ======
+  function syncDialsToVars(){
+    floodPeriod.value = String(FLOOD_PERIOD);
+    floodPeriodVal.textContent = `${Math.round(FLOOD_PERIOD)}s`;
+    stepsDial.value = String(STEPS_PER_FRAME);
+    stepsVal.textContent = String(STEPS_PER_FRAME);
+    epsDial.value = String(epsilon); epsDialVal.textContent = epsilon.toFixed(2);
+    alphaDial.value = String(alpha); alphaDialVal.textContent = alpha.toFixed(2);
+    gammaDial.value = String(gamma); gammaDialVal.textContent = gamma.toFixed(2);
+
+    rTime.value = String(R_TIME);
+    rNewLand.value = String(R_NEW_LAND);
+    rVisit.value = String(R_VISIT);
+    rTree.value = String(R_DISCOVER_TREE);
+    rSenseWater.value = String(R_SENSE_WATER);
+    rSafe.value = String(R_FLOOD_SAFE);
+    rDeath.value = String(R_FLOOD_DEATH);
+    rStuck.value = String(R_STUCK);
+  }
+  function attachDialHandlers(){
+    floodPeriod.addEventListener('input', ()=>{
+      FLOOD_PERIOD = Number(floodPeriod.value)||30;
+      floodPeriodVal.textContent = `${Math.round(FLOOD_PERIOD)}s`;
+    });
+    stepsDial.addEventListener('input', ()=>{
+      STEPS_PER_FRAME = Number(stepsDial.value)||24;
+      stepsVal.textContent = String(STEPS_PER_FRAME);
+    });
+
+    epsDial.addEventListener('input', ()=>{
+      epsilon = Math.max(0, Math.min(1, Number(epsDial.value)));
+      epsDialVal.textContent = epsilon.toFixed(2);
+      epsVal.textContent = epsilon.toFixed(2);
+    });
+    alphaDial.addEventListener('input', ()=>{
+      alpha = Math.max(0.01, Math.min(1, Number(alphaDial.value)));
+      alphaDialVal.textContent = alpha.toFixed(2);
+    });
+    gammaDial.addEventListener('input', ()=>{
+      gamma = Math.max(0.5, Math.min(0.99, Number(gammaDial.value)));
+      gammaDialVal.textContent = gamma.toFixed(2);
+    });
+
+    const num = (el, setter) => el.addEventListener('change', ()=>{ const v=Number(el.value); if(!Number.isNaN(v)) setter(v); });
+    num(rTime, v=>R_TIME=v);
+    num(rNewLand, v=>R_NEW_LAND=v);
+    num(rVisit, v=>R_VISIT=v);
+    num(rTree, v=>R_DISCOVER_TREE=v);
+    num(rSenseWater, v=>R_SENSE_WATER=v);
+    num(rSafe, v=>R_FLOOD_SAFE=v);
+    num(rDeath, v=>R_FLOOD_DEATH=v);
+    num(rStuck, v=>R_STUCK=v);
+  }
+
+  // ====== Init & Loop ======
+  generateMap();
+  startLearning(true);
+  syncDialsToVars();
+  attachDialHandlers();
+
+  let t0 = performance.now();
+  function animate(now){
+    requestAnimationFrame(animate);
+    controls.update();
+
+    const elapsed = (now - t0)/1000;
+
+    if(!paused && !win){
+      // Flood timing
+      if(elapsed - lastFloodTime >= FLOOD_PERIOD){
+        lastFloodTime += FLOOD_PERIOD;
+        floodStep();
+      }
+      // Steps per frame (dial)
+      const steps = STEPS_PER_FRAME;
+      for(let i=0;i<steps;i++){
+        if(learnMode) stepAgentQL();
+        else {
+          const ok = stepTowardUnseen() || stepGreedyOnce();
+          if(!ok){
+            showBanner('Failed to map 100% — starting Q-learning…');
+            startLearning(true);
+            setTimeout(()=>hideBanner(), 1200);
+            break;
+          }
+        }
+      }
+      // trapped → new episode on same map
+      let moves=0;
+      for(const d of DIRS){
+        const nx=agent.x+d.dx, ny=agent.y+d.dy;
+        if(!inB(nx,ny)) continue;
+        if(tiles[id(nx,ny)]!==TILE_WATER) moves++;
+      }
+      if(moves===0){
+        if(!learnMode){
+          showBanner('Failed to map 100% — starting Q-learning…');
+          startLearning(true);
+          setTimeout(()=>hideBanner(), 1200);
+        }
+        resetAgentOnly();
+      }
+    }
+
+    updateHUD(elapsed);
+    drawMinimap();
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(animate);
+})();
+</script>
+</body>
+</html>
